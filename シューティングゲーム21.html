@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>ロケットシューティングゲーム（修正版: 散弾銃アイテム画像追加）</title>
+  <style>
+    body {
+      margin: 0; padding: 0;
+      background: #000; color: #fff;
+      text-align: center; user-select: none;
+      overflow: hidden;
+    }
+    #gameCanvas {
+      display: block;
+      margin: 0 auto;
+      background: #222;
+    }
+    #info, #controlPanel {
+      margin: 5px;
+    }
+    #retryButton {
+      display: none;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>ロケットシューティングゲーム（修正版）</h1>
+
+  <!-- 難易度選択UI -->
+  <div id="controlPanel">
+    <label for="difficultySelect">難易度:</label>
+    <select id="difficultySelect">
+      <option value="Easy">Easy</option>
+      <option value="Normal" selected>Normal</option>
+      <option value="Difficult">Difficult</option>
+      <option value="VeryDifficult">VeryDifficult</option>
+      <option value="Death">Death</option>
+    </select>
+    <button id="startButton">ゲーム開始</button>
+  </div>
+
+  <canvas id="gameCanvas" width="400" height="600"></canvas>
+  <div id="info"></div>
+  <div id="retryButton">
+    <button id="retry">リトライ</button>
+  </div>
+
+  <script>
+      // -------------------------------------------------
+    // 音声オブジェクトの生成（相対パス）
+    // -------------------------------------------------
+    const bgm = new Audio("audio/BGM.mp3");
+    bgm.loop = true;
+    const shootSound = new Audio("audio/shoot.mp3");
+    const shoot2Sound = new Audio("audio/shoot2.mp3");
+    const damageSound = new Audio("audio/damage.mp3");
+    const itemSound = new Audio("audio/item%20pickup.mp3");
+    const explosionSound = new Audio("audio/爆発.mp3");
+
+    // -------------------------------------------------
+    // 画像の読み込み（相対パス）
+    // -------------------------------------------------
+    const bossImage = new Image();
+    bossImage.src = "images/UFO.png";
+
+    const playerRocketImage = new Image();
+    playerRocketImage.src = "images/ロケット.png";
+
+    const enemyNormalImage = new Image();
+    enemyNormalImage.src = "images/敵１.png";
+    const enemyStrongImage = new Image();
+    enemyStrongImage.src = "images/敵２.png";
+
+    // 新たに散弾銃アイテムの画像を読み込み
+    const shotgunItemImage = new Image();
+    shotgunItemImage.src = "images/弾.png";
+
+    // -------------------------------------------------
+    // グローバル変数・定数
+    // -------------------------------------------------
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const info = document.getElementById('info');
+    const retryButton = document.getElementById('retryButton');
+    const retry = document.getElementById('retry');
+    const controlPanel = document.getElementById('controlPanel');
+    const difficultySelect = document.getElementById('difficultySelect');
+    const startButton = document.getElementById('startButton');
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    // 自機
+    let rocketWidth, rocketHeight, rocketX, rocketY;
+    let moveLeft = false, moveRight = false, moveUp = false, moveDown = false;
+    const rocketSpeed = 5;
+
+    // 自機弾
+    let bullets = [];
+    const bulletWidth = 5;
+    const bulletHeight = 10;
+    const bulletBaseSpeed = 7;
+
+    // 連射制限
+    let isSpacePressed = false;
+    let shootCooldown = 0;
+    const NORMAL_SHOOT_COOLDOWN = 12;
+    const SHOTGUN_SHOOT_COOLDOWN = 24; // 散弾銃は1秒間に約2.5発
+
+    // 散弾銃モード
+    let isShotgunActive = false;
+    let shotgunAmmo = 0;
+
+    // 雑魚敵
+    let enemyRadius;
+    let enemies;
+    let baseEnemySpeed;
+    let speedIncrement;
+    let spawnInterval;
+    let enemySpawnCounter;
+
+    // アイテム
+    let items = [];
+    let itemSpawnInterval;
+    let itemSpawnCounter;
+
+    // HP & スコア
+    let maxHP, currentHP;
+    let score;
+    let maxScore;
+    let canUseLocalStorage = false;
+
+    // ゲーム進行
+    let gameOver = false;
+    let animationId;
+    let frameCount = 0;
+
+    // ボス関連
+    let bossActive = false;
+    let boss, bossBullets;
+    let bossBulletSpeed = 3;
+    let bossBulletInterval = 60;
+    let bossBulletTimer = 0;
+    let bossBulletNum = 8;
+    let bossAppearTime = 3600;
+    let bossNextTime = bossAppearTime;
+    let bossLevel = 1;
+    const bossHPMax = 100;
+    let bossMoveTimer = 0;
+    const bossMoveInterval = 120;
+    let bossExplosion = false;
+    let bossExplosionTimer = 0;
+    const bossExplosionDuration = 300;
+    let bossExplosionX = 0;
+    let bossExplosionY = 0;
+    let bossKillCount = 0;
+
+    // 難易度データ（"Death" モードを追加）
+    const difficultySettings = {
+      Easy: { baseSpeed: 1, spawnInterval: 67, speedInc: 0.0003 },
+      Normal: { baseSpeed: 2, spawnInterval: 50, speedInc: 0.0005 },
+      Difficult: { baseSpeed: 3, spawnInterval: 33, speedInc: 0.0008 },
+      VeryDifficult: { baseSpeed: 4, spawnInterval: 25, speedInc: 0.001 },
+      Death: { baseSpeed: 5, spawnInterval: 15, speedInc: 0.002 }
+    };
+
+    let initialDifficultyParams = null;
+    const ATTACK_PATTERN_DURATION = 180;
+
+    // -------------------------------------------------
+    // イベントリスナー
+    // -------------------------------------------------
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') moveLeft = true;
+      if (e.key === 'ArrowRight') moveRight = true;
+      if (e.key === 'ArrowUp') moveUp = true;
+      if (e.key === 'ArrowDown') moveDown = true;
+      if (e.key === ' ') isSpacePressed = true;
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowLeft') moveLeft = false;
+      if (e.key === 'ArrowRight') moveRight = false;
+      if (e.key === 'ArrowUp') moveUp = false;
+      if (e.key === 'ArrowDown') moveDown = false;
+      if (e.key === ' ') isSpacePressed = false;
+    });
+
+    startButton.addEventListener('click', () => {
+      const diff = difficultySelect.value;
+      startGameWithDifficulty(diff);
+      bgm.currentTime = 0;
+      bgm.play();
+    });
+
+    retry.addEventListener('click', () => {
+      resetGame();
+      bgm.currentTime = 0;
+      bgm.play();
+    });
+
+    function startGameWithDifficulty(diff) {
+      const setting = difficultySettings[diff];
+      controlPanel.style.display = 'none';
+      initialDifficultyParams = {
+        baseEnemySpeed: setting.baseSpeed,
+        spawnInterval: setting.spawnInterval,
+        speedIncrement: setting.speedInc
+      };
+      resetGame();
+    }
+
+    function resetGame() {
+      if (!initialDifficultyParams) return;
+      rocketWidth = 40;
+      rocketHeight = 60;
+      rocketX = WIDTH / 2 - rocketWidth / 2;
+      rocketY = HEIGHT - rocketHeight - 20;
+      moveLeft = moveRight = moveUp = moveDown = false;
+      isSpacePressed = false;
+      shootCooldown = 0;
+      bullets = [];
+      isShotgunActive = false;
+      shotgunAmmo = 0;
+      enemyRadius = 10;
+      enemies = [];
+      baseEnemySpeed = initialDifficultyParams.baseEnemySpeed;
+      spawnInterval = initialDifficultyParams.spawnInterval;
+      speedIncrement = initialDifficultyParams.speedIncrement;
+      enemySpawnCounter = 0;
+      items = [];
+      itemSpawnInterval = 60 * 20;
+      itemSpawnCounter = 0;
+      maxHP = 5;
+      currentHP = maxHP;
+      score = 0;
+      if (canUseLocalStorage) {
+        const savedMaxScore = localStorage.getItem('maxScore');
+        maxScore = savedMaxScore ? parseInt(savedMaxScore, 10) : 0;
+      } else {
+        maxScore = 0;
+      }
+      bossActive = false;
+      boss = null;
+      bossBullets = [];
+      bossBulletTimer = 0;
+      bossNextTime = bossAppearTime;
+      bossLevel = 1;
+      bossBulletNum = Math.floor((8 + (bossLevel - 1) * 2) * 1.2);
+      bossBulletSpeed = 3;
+      bossExplosion = false;
+      bossExplosionTimer = 0;
+      bossExplosionX = 0;
+      bossExplosionY = 0;
+      bossKillCount = 0;
+      bossMoveTimer = 0;
+      frameCount = 0;
+      updateInfo();
+      gameOver = false;
+      retryButton.style.display = 'none';
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      if (animationId) cancelAnimationFrame(animationId);
+      animationId = requestAnimationFrame(gameLoop);
+    }
+
+    function gameLoop() {
+      if (gameOver) { drawGameOver(); return; }
+      update();
+      draw();
+      animationId = requestAnimationFrame(gameLoop);
+    }
+
+    function update() {
+      frameCount++;
+      if (moveLeft) rocketX -= rocketSpeed;
+      if (moveRight) rocketX += rocketSpeed;
+      if (moveUp) rocketY -= rocketSpeed;
+      if (moveDown) rocketY += rocketSpeed;
+      if (rocketX < 0) rocketX = 0;
+      if (rocketX + rocketWidth > WIDTH) rocketX = WIDTH - rocketWidth;
+      if (rocketY < 0) rocketY = 0;
+      if (rocketY + rocketHeight > HEIGHT) rocketY = HEIGHT - rocketHeight;
+      
+      if (isSpacePressed) {
+        if (shootCooldown <= 0) {
+          shootBullet();
+          shootCooldown = isShotgunActive ? SHOTGUN_SHOOT_COOLDOWN : NORMAL_SHOOT_COOLDOWN;
+        }
+      }
+      if (shootCooldown > 0) shootCooldown--;
+      
+      for (let i = 0; i < bullets.length; i++) {
+        bullets[i].x += bullets[i].dx;
+        bullets[i].y += bullets[i].dy;
+      }
+      bullets = bullets.filter(b => b.x + b.w > 0 && b.x < WIDTH && b.y + b.h > 0 && b.y < HEIGHT);
+      
+      if (isShotgunActive && shotgunAmmo <= 0) isShotgunActive = false;
+
+      
+    if (!bossExplosion) {
+      enemySpawnCounter++;
+      spawnInterval = Math.max(20, spawnInterval - 0.005);
+      if (enemySpawnCounter > spawnInterval) {
+        spawnEnemy();
+        enemySpawnCounter = 0;
+      }
+    }
+
+
+      baseEnemySpeed += speedIncrement;
+      
+      for (let i = 0; i < enemies.length; i++) {
+        const enemy = enemies[i];
+        if (enemy.type === 'chase') {
+          const rocketCenterX = rocketX + rocketWidth / 2;
+          const diffX = (rocketCenterX - enemy.x) * 0.02;
+          const speedMultiplier = enemy.isStrong ? 1.5 : 1.0;
+          enemy.x += diffX;
+          enemy.y += baseEnemySpeed * speedMultiplier;
+        } else if (enemy.type === 'randomMove') {
+          enemy.x += enemy.vx;
+          enemy.y += baseEnemySpeed;
+        }
+        if (enemy.y - enemyRadius > HEIGHT) { enemies.splice(i, 1); i--; }
+        else {
+          if (enemy.x < enemyRadius) { enemy.x = enemyRadius; enemy.vx = -enemy.vx; }
+          else if (enemy.x > WIDTH - enemyRadius) { enemy.x = WIDTH - enemyRadius; enemy.vx = -enemy.vx; }
+        }
+      }
+      
+      for (let i = 0; i < enemies.length; i++) {
+        const enemy = enemies[i];
+        const ex = enemy.x - enemyRadius;
+        const ey = enemy.y - enemyRadius;
+        for (let j = 0; j < bullets.length; j++) {
+          const bul = bullets[j];
+          if (checkCollision(ex, ey, enemyRadius*2, enemyRadius*2, bul.x, bul.y, bul.w, bul.h)) {
+            score += enemy.isStrong ? 30 : 10;
+            enemies.splice(i, 1);
+            bullets.splice(j, 1);
+            i--; j--;
+            break;
+          }
+        }
+      }
+      
+      for (let i = 0; i < enemies.length; i++) {
+        const enemy = enemies[i];
+        const ex = enemy.x - enemyRadius;
+        const ey = enemy.y - enemyRadius;
+        if (checkCollision(rocketX, rocketY, rocketWidth, rocketHeight, ex, ey, enemyRadius*2, enemyRadius*2)) {
+          currentHP--;
+          damageSound.currentTime = 0;
+          damageSound.play();
+          enemies.splice(i, 1);
+          i--;
+          if (currentHP <= 0) gameOver = true;
+        }
+      }
+      
+      if (bossActive && boss) {
+        for (let i = 0; i < bullets.length; i++) {
+          if (checkCollision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, boss.x, boss.y, boss.width, boss.height)) {
+            boss.hp--;
+            bullets.splice(i, 1);
+            i--;
+            if (boss.hp <= 0) { bossDefeated(); break; }
+          }
+        }
+      }
+      
+      if (bossActive && boss) {
+        for (let i = 0; i < bossBullets.length; i++) {
+          const b = bossBullets[i];
+          if (checkCollision(rocketX, rocketY, rocketWidth, rocketHeight, b.x - b.size, b.y - b.size, b.size * 2, b.size * 2)) {
+            currentHP--;
+            damageSound.currentTime = 0;
+            damageSound.play();
+            bossBullets.splice(i, 1);
+            i--;
+            if (currentHP <= 0) gameOver = true;
+          }
+        }
+      }
+      
+      itemSpawnCounter++;
+      if (itemSpawnCounter > itemSpawnInterval) { spawnItem(); itemSpawnCounter = 0; }
+      for (let i = 0; i < items.length; i++) { items[i].y += 2; }
+      items = items.filter(it => it.y < HEIGHT + it.size);
+      
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const ix = it.x - it.size/2;
+        const iy = it.y - it.size/2;
+        const iw = it.size;
+        const ih = it.size;
+        if (checkCollision(rocketX, rocketY, rocketWidth, rocketHeight, ix, iy, iw, ih)) {
+          if (it.type === 'hp') { currentHP = Math.min(currentHP + 1, maxHP); }
+          else { isShotgunActive = true; shotgunAmmo = 100; }
+          itemSound.currentTime = 0;
+          itemSound.play();
+          items.splice(i, 1);
+          i--;
+        }
+      }
+      
+      if (!bossActive && !bossExplosion && frameCount >= bossNextTime) { spawnBoss(); }
+      if (bossActive && boss) { updateBoss(); }
+      else if (bossExplosion) {
+        bossExplosionTimer++;
+        if (bossExplosionTimer > bossExplosionDuration) {
+          bossActive = false;
+          bossExplosion = false;
+          bossLevel++;
+          bossNextTime = frameCount + bossAppearTime;
+        }
+      }
+      
+      updateInfo();
+    }
+
+    function spawnEnemy() {
+      let isStrong = (Math.random() < 0.33);
+      const isRandomMoveType = (Math.random() < 0.5);
+      const xPosition = Math.random() * (WIDTH - enemyRadius * 2) + enemyRadius;
+      const enemyObj = { x: xPosition, y: -enemyRadius, isStrong: isStrong, type: isRandomMoveType ? 'randomMove' : 'chase', vx: 0 };
+      if (isRandomMoveType) { enemyObj.vx = (Math.random() * 4) - 2; }
+      enemies.push(enemyObj);
+    }
+
+    function spawnItem() {
+      const isShotgun = (Math.random() < 0.3);
+      const itemType = isShotgun ? 'shotgun' : 'hp';
+      const xPosition = Math.random() * (WIDTH - 20) + 10;
+      const size = 25;
+      items.push({ x: xPosition, y: -size, size: size, type: itemType });
+    }
+
+    function spawnBoss() {
+      bossActive = true;
+      bossExplosion = false;
+      bossExplosionTimer = 0;
+      // ボス画像は正方形にする
+      boss = { x: WIDTH/2 - 50, y: 50, width: 100, height: 100, hp: bossHPMax, speedX: 0, speedY: 0, level: bossLevel, currentPattern: "eightway", patternTimer: 0 };
+      bossBulletNum = Math.floor((8 + (bossLevel - 1) * 2) * 1.2);
+      bossBulletSpeed = 3 + (bossLevel - 1) * 0.5;
+      bossBulletTimer = 0;
+      bossMoveTimer = 0;
+      bossBullets = [];
+      setBossRandomSpeed();
+    }
+
+    function updateBoss() {
+      bossMoveTimer++;
+      if (bossMoveTimer > bossMoveInterval) { bossMoveTimer = 0; setBossRandomSpeed(); }
+      boss.x += boss.speedX;
+      boss.y += boss.speedY;
+      if (boss.x < 0) boss.x = 0;
+      if (boss.x + boss.width > WIDTH) boss.x = WIDTH - boss.width;
+      if (boss.y < 0) boss.y = 0;
+      if (boss.y + boss.height > HEIGHT/2) { boss.y = HEIGHT/2 - boss.height; }
+      boss.patternTimer++;
+      if (boss.patternTimer > ATTACK_PATTERN_DURATION) { boss.patternTimer = 0; pickBossAttackPattern(boss); }
+      bossBulletTimer++;
+      if (bossBulletTimer > bossBulletInterval) { executeBossAttack(boss.currentPattern); bossBulletTimer = 0; }
+      for (let i = 0; i < bossBullets.length; i++) {
+        const b = bossBullets[i];
+        if (b.type === "wave") { b.phase += 0.1; b.x += b.dx + Math.sin(b.phase) * b.waveAmp; b.y += b.dy; }
+        else { b.x += b.dx; b.y += b.dy; }
+        if (b.x < -50 || b.x > WIDTH+50 || b.y < -50 || b.y > HEIGHT+50) { bossBullets.splice(i, 1); i--; }
+      }
+    }
+
+    function bossDefeated() {
+      score += 100;
+      bossExplosion = true;
+      bossExplosionTimer = 0;
+      bossExplosionX = boss.x + boss.width / 2;
+      bossExplosionY = boss.y + boss.height / 2;
+      explosionSound.currentTime = 0;
+      explosionSound.play();
+      bossActive = false;
+      boss = null;
+      bossBullets = [];
+      bossKillCount++;
+      setTimeFromStart(20 * bossKillCount);
+    }
+
+    function pickBossAttackPattern(boss) {
+      let patternList = [];
+      if (boss.level === 1) { patternList = ["eightway"]; }
+      else if (boss.level === 2) { patternList = ["eightway", "tornado"]; }
+      else if (boss.level === 3) { patternList = ["eightway", "tornado", "wave"]; }
+      else { patternList = ["eightway", "tornado", "wave", "laser"]; }
+      const randIndex = Math.floor(Math.random() * patternList.length);
+      boss.currentPattern = patternList[randIndex];
+    }
+
+    function executeBossAttack(pattern) {
+      if (pattern === "eightway") { bossFireEightway(); }
+      else if (pattern === "tornado") { bossFireTornado(); }
+      else if (pattern === "wave") { bossFireWave(); }
+      else if (pattern === "laser") { bossFireLaser(); }
+    }
+
+    function bossFireEightway() {
+      const centerX = boss.x + boss.width / 2;
+      const centerY = boss.y + boss.height / 2;
+      for (let i = 0; i < bossBulletNum; i++) {
+        const angle = (Math.PI * 2 / bossBulletNum) * i;
+        const dx = Math.cos(angle) * bossBulletSpeed;
+        const dy = Math.sin(angle) * bossBulletSpeed;
+        bossBullets.push({ x: centerX, y: centerY, dx: dx, dy: dy, size: 8, type: "normal" });
+      }
+    }
+
+    let tornadoAngle = 0;
+    function bossFireTornado() {
+      const centerX = boss.x + boss.width / 2;
+      const centerY = boss.y + boss.height / 2;
+      for (let i = 0; i < 10; i++) {
+        const angle = tornadoAngle + i * 0.2;
+        const dx = Math.cos(angle) * bossBulletSpeed;
+        const dy = Math.sin(angle) * bossBulletSpeed;
+        bossBullets.push({ x: centerX, y: centerY, dx: dx, dy: dy, size: 8, type: "normal" });
+      }
+      tornadoAngle += 0.5;
+    }
+
+    function bossFireWave() {
+      const centerX = boss.x + boss.width / 2;
+      const centerY = boss.y + boss.height / 2;
+      for (let i = -2; i <= 2; i++) {
+        let dx = i * 0.5;
+        let dy = bossBulletSpeed;
+        bossBullets.push({ x: centerX + i * 10, y: centerY, dx: dx, dy: dy, size: 8, type: "wave", waveAmp: 1.5, phase: 0 });
+      }
+    }
+
+    function bossFireLaser() {
+      const centerX = boss.x + boss.width / 2;
+      const topY = boss.y + boss.height;
+      bossBullets.push({ x: centerX - 5, y: topY, dx: 0, dy: bossBulletSpeed * 1.5, size: 20, type: "normal" });
+    }
+
+    function setTimeFromStart(tSeconds) {
+      const frames = tSeconds * 60;
+      baseEnemySpeed = initialDifficultyParams.baseEnemySpeed + frames * initialDifficultyParams.speedIncrement;
+      let newSpawn = initialDifficultyParams.spawnInterval - 0.005 * frames;
+      if (newSpawn < 20) newSpawn = 20;
+      spawnInterval = newSpawn;
+    }
+    
+    function shootBullet() {
+      if (isShotgunActive) {
+        const speed = bulletBaseSpeed;
+        const centerX = rocketX + rocketWidth / 2;
+        const topY = rocketY;
+        bullets.push({ x: centerX - bulletWidth/2, y: topY, dx: 0, dy: -speed, w: bulletWidth, h: bulletHeight });
+        bullets.push({ x: centerX - bulletWidth/2, y: topY, dx: 2, dy: -speed, w: bulletWidth, h: bulletHeight });
+        bullets.push({ x: centerX - bulletWidth/2, y: topY, dx: -2, dy: -speed, w: bulletWidth, h: bulletHeight });
+        shotgunAmmo--;
+        if (shotgunAmmo <= 0) { isShotgunActive = false; }
+        shoot2Sound.currentTime = 0;
+        shoot2Sound.play();
+      } else {
+        bullets.push({ x: rocketX + rocketWidth / 2 - bulletWidth / 2, y: rocketY, dx: 0, dy: -bulletBaseSpeed, w: bulletWidth, h: bulletHeight });
+        shootSound.currentTime = 0;
+        shootSound.play();
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      drawRocket();
+      ctx.fillStyle = 'yellow';
+      for (let i = 0; i < bullets.length; i++) {
+        ctx.fillRect(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h);
+      }
+      // 敵描画：画像を2倍サイズで表示（当たり判定は従来通り）
+      for (let i = 0; i < enemies.length; i++) {
+        const enemy = enemies[i];
+        if (enemy.isStrong) {
+          if (enemyStrongImage.complete) {
+            ctx.drawImage(enemyStrongImage, enemy.x - enemyRadius, enemy.y - enemyRadius, enemyRadius * 4, enemyRadius * 4);
+          } else {
+            ctx.fillStyle = 'purple';
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemyRadius, 0, Math.PI * 2, false);
+            ctx.fill();
+          }
+        } else {
+          if (enemyNormalImage.complete) {
+            ctx.drawImage(enemyNormalImage, enemy.x - enemyRadius, enemy.y - enemyRadius, enemyRadius * 4, enemyRadius * 4);
+          } else {
+            ctx.fillStyle = 'red';
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemyRadius, 0, Math.PI * 2, false);
+            ctx.fill();
+          }
+        }
+      }
+      for (let i = 0; i < items.length; i++) { drawItem(items[i]); }
+      if (bossActive && boss) { drawBoss(); drawBossBullets(); }
+      else if (bossExplosion) { drawBossExplosion(); }
+      ctx.fillStyle = 'white';
+      ctx.font = '16px Arial';
+      ctx.fillText(`Score: ${score}`, 10, 20);
+      ctx.fillText(`HP: ${currentHP} / ${maxHP}`, 10, 40);
+      if (isShotgunActive) { ctx.fillText(`散弾銃モード残り弾数: ${shotgunAmmo}`, 10, 60); }
+    }
+
+    // プレイヤー（自機）の描画：画像を使用
+    function drawRocket() {
+      if (playerRocketImage.complete) {
+        ctx.drawImage(playerRocketImage, rocketX, rocketY, rocketWidth, rocketHeight);
+      } else {
+        ctx.fillStyle = 'cyan';
+        ctx.fillRect(rocketX, rocketY, rocketWidth, rocketHeight);
+      }
+    }
+
+    // アイテム描画：hpアイテムはハート、shotgunアイテムは画像で描画
+    function drawItem(item) {
+      if (item.type === 'hp') {
+        ctx.fillStyle = 'pink';
+        drawHeart(item.x, item.y, item.size);
+      } else {
+        if (shotgunItemImage.complete) {
+          ctx.drawImage(shotgunItemImage, item.x - item.size/2, item.y - item.size/2, item.size, item.size);
+        } else {
+          ctx.fillStyle = 'orange';
+          drawDiamond(item.x, item.y, item.size);
+        }
+      }
+    }
+
+    function drawHeart(x, y, size) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.beginPath();
+      const topCurveHeight = size * 0.3;
+      ctx.moveTo(0, topCurveHeight);
+      ctx.bezierCurveTo(0, 0, -size/2, 0, -size/2, topCurveHeight);
+      ctx.bezierCurveTo(-size/2, size/2, 0, size*0.8, 0, size);
+      ctx.bezierCurveTo(0, size*0.8, size/2, size/2, size/2, topCurveHeight);
+      ctx.bezierCurveTo(size/2, 0, 0, 0, 0, topCurveHeight);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawDiamond(x, y, size) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.beginPath();
+      ctx.moveTo(0, -size/2);
+      ctx.lineTo(size/2, 0);
+      ctx.lineTo(0, size/2);
+      ctx.lineTo(-size/2, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function checkCollision(x1, y1, w1, h1, x2, y2, w2, h2) {
+      return (x1 < x2 + w2 && x1 + w1 > x2 && y1 < y2 + h2 && y1 + h1 > y2);
+    }
+
+    function updateInfo() {
+      info.textContent = `HP: ${currentHP} / ${maxHP} | Score: ${score}`;
+    }
+
+    function drawGameOver() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      ctx.fillStyle = 'white';
+      ctx.font = '36px Arial';
+      ctx.fillText('GAME OVER', WIDTH / 2 - 100, HEIGHT / 2);
+      retryButton.style.display = 'block';
+    }
+
+    function setBossRandomSpeed() {
+      boss.speedX = (Math.random() - 0.5) * 4;
+      boss.speedY = (Math.random() - 0.5) * 2;
+    }
+
+    // ボス描画：画像を正方形で描画
+    function drawBoss() {
+      if (bossImage.complete) {
+        ctx.drawImage(bossImage, boss.x, boss.y, boss.width, boss.height);
+      } else {
+        ctx.fillStyle = 'purple';
+        ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+      }
+      const gaugeWidth = boss.width;
+      const gaugeHeight = 6;
+      const gaugeX = boss.x;
+      const gaugeY = boss.y - gaugeHeight - 4;
+      ctx.fillStyle = 'gray';
+      ctx.fillRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight);
+      const hpRatio = boss.hp / bossHPMax;
+      ctx.fillStyle = 'red';
+      ctx.fillRect(gaugeX, gaugeY, gaugeWidth * hpRatio, gaugeHeight);
+      ctx.strokeStyle = 'white';
+      ctx.strokeRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight);
+    }
+
+    function drawBossBullets() {
+      ctx.fillStyle = 'orange';
+      for (let i = 0; i < bossBullets.length; i++) {
+        ctx.beginPath();
+        ctx.arc(bossBullets[i].x, bossBullets[i].y, bossBullets[i].size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawBossExplosion() {
+      const progress = bossExplosionTimer / bossExplosionDuration;
+      const radius = 50 + progress * 100;
+      const opacity = 1 - progress;
+      ctx.save();
+      ctx.globalAlpha = opacity;
+      ctx.fillStyle = 'yellow';
+      ctx.beginPath();
+      ctx.arc(bossExplosionX, bossExplosionY, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    try {
+      const testKey = '__test__';
+      localStorage.setItem(testKey, '1');
+      localStorage.removeItem(testKey);
+      canUseLocalStorage = true;
+    } catch(e) {
+      canUseLocalStorage = false;
+      console.warn('localStorageが使えません。ハイスコアは保存されません。');
+    }
+  </script>
+</body>
+</html>
